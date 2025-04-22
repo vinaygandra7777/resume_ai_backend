@@ -1,0 +1,54 @@
+# --- Python ---
+# Virtual environment folders (common names)
+venv/
+.venv/
+env/
+.env/
+ENV/
+# NOTE: If you named your virtual environment something else, add that name here followed by /
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+wheels/
+
+# --- Secrets (CRITICAL due to python-dotenv and supabase) ---
+# Environment variables file - DO NOT COMMIT THIS!
+.env
+# Add any other files containing secrets or credentials
+
+# --- Supabase ---
+# If the supabase client generates any local cache or config files (check documentation if issues arise)
+# (Usually handled by .env, but good to keep in mind)
+
+# --- IDE / Editor configuration ---
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# --- OS generated files ---
+.DS_Store
+Thumbs.db
+
+# --- Testing ---
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# --- Temporary/Generated Files (Optional, depends on your project) ---
+# If your scripts using PyMuPDF or python-docx generate temporary output files
+# during development/testing that you don't want to track, add patterns here.
+# Example:
+# output_files/
+# *.tmp.pdf
+# *.tmp.docx
