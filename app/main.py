@@ -1,7 +1,5 @@
 from fastapi import FastAPI
-from app.routers import upload
-# No more database/models imports needed here related to SQLAlchemy
-# Import the supabase client initialization check if needed, or rely on utils
+from app.routers import upload,match,analyze
 from app.utils import supabase_utils # To trigger initialization check early
 
 app = FastAPI(title="Resume Analyzer API")
@@ -12,12 +10,9 @@ try:
     print("FastAPI startup: Supabase client confirmed initialized.")
 except RuntimeError as e:
     print(f"FastAPI startup FATAL ERROR: {e}")
-    # Decide if the app should exit or run in a degraded state
-    # For this app, Supabase is critical, so maybe exit or log severely
-    # raise SystemExit(f"Failed to initialize Supabase: {e}") # Option to exit
-
 app.include_router(upload.router)
-
+app.include_router(match.router)
+app.include_router(analyze.router)
 @app.get("/", tags=["Root"])
 async def read_root():
     return {"message": "Welcome to the Resume Analyzer API"}

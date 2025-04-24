@@ -143,3 +143,11 @@ async def add_resume_to_db(filename: str, file_url: str, text_content: str) -> d
         # Optionally log the data that failed
         # print(f"Failed data: filename={filename}, file_url={file_url}, text_content length={len(text_content)}")
         raise # Re-raise the exception to be caught by the FastAPI endpoint handler
+async def get_all_resumes_from_db() -> list:
+    client = get_supabase_client()
+    try:
+        response = client.table('resume-analyser').select("*").execute()
+        return response.data if response.data else []
+    except Exception as e:
+        print(f"Error fetching resumes: {e}")
+        return []
