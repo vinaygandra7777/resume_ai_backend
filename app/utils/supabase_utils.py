@@ -1,13 +1,11 @@
 import os
-from supabase import create_client, Client, PostgrestAPIResponse
-# If storage responses have specific types in v2, import them, otherwise rely on attribute access
-# from supabase.lib.storage.storage_response import UploadResponse # Example if needed
+from supabase import create_client, Client
 import uuid
 from dotenv import load_dotenv
 import mimetypes
 from io import BytesIO
 from typing import List, Dict, Any, Optional
-import logging # Use logging
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +13,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-# IMPORTANT: Use the SERVICE ROLE KEY for operations requiring elevated privileges
-# like calling DB functions (if security definer) or bypassing RLS for inserts/updates.
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # Ensure this is the SERVICE key
 SUPABASE_BUCKET_NAME = os.getenv("SUPABASE_BUCKET_NAME")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -25,10 +21,10 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 if not SUPABASE_BUCKET_NAME:
     raise ValueError("Supabase Bucket Name must be set (SUPABASE_BUCKET_NAME)")
 
-# Ensure this matches your actual table name in Supabase
-DB_TABLE_NAME = os.getenv("SUPABASE_TABLE_NAME", "resume-analyser") # Make configurable
-# Ensure this matches the DB function you created
-DB_MATCH_FUNCTION_NAME = os.getenv("SUPABASE_MATCH_FUNCTION", "match_resumes") # Make configurable
+DB_TABLE_NAME = os.getenv("SUPABASE_TABLE_NAME", "resume-analyser")  # Make configurable
+DB_MATCH_FUNCTION_NAME = os.getenv("SUPABASE_MATCH_FUNCTION", "match_resumes")  # Make configurable
+
+supabase: Optional[Client] = None  # Initialize as None
 
 try:
     logger.info("Attempting to initialize Supabase client...")
@@ -37,22 +33,17 @@ try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     logger.info("Supabase client initialized successfully.")
 except Exception as e:
-    logger.error(f"Error initializing Supabase client: {e}", exc_info=True)
-    supabase = None # Set to None to indicate failure
+    logger.critical(f"CRITICAL: Error initializing Supabase client: {e}", exc_info=True)
+    # Keep supabase as None to indicate failure
 
 def get_supabase_client() -> Client:
     """Returns the initialized Supabase client or raises an error."""
-    if not supabase:
-        # This error should ideally prevent the app from starting fully
-        # (checked in main.py)
-        raise RuntimeError("Supabase client is not initialized. Check logs for initialization errors.")
+    if supabase is None:
+        raise RuntimeError("Supabase client is not initialized. Check logs for critical initialization errors.")
     return supabase
 
 def upload_to_supabase_storage(file: BytesIO, filename: str) -> str:
-    """
-    Uploads a file stream to Supabase Storage.
-    NOTE: This operation is synchronous in supabase-py v2.
-    """
+    """Uploads a file stream to Supabase Storage."""
     client = get_supabase_client()
     unique_folder = os.getenv("SUPABASE_FOLDER_PATH", "resumes")
     unique_filename = f"{uuid.uuid4()}_{filename}"
@@ -66,8 +57,7 @@ def upload_to_supabase_storage(file: BytesIO, filename: str) -> str:
 
     try:
         file.seek(0)
-        # client.storage.from_().upload() is synchronous in v2
-        storage_response = client.storage.from_(SUPABASE_BUCKET_NAME).upload(
+        upload_response = client.storage.from_(SUPABASE_BUCKET_NAME).upload(
             path=file_path_in_bucket,
             file=file.read(),
             file_options={
@@ -75,40 +65,27 @@ def upload_to_supabase_storage(file: BytesIO, filename: str) -> str:
                 "x-upsert": "false"
             }
         )
-        # Access response attributes directly (v2 pattern)
-        # Note: The actual response object might not always have '.path'. Check Supabase docs/debug if needed.
-        # Often, success is indicated by lack of exception, and you use the input path for get_public_url.
-        logger.info(f"Supabase storage upload API call potentially successful for path: {file_path_in_bucket}. Response: {storage_response}")
+        logger.info(f"Supabase storage upload API call successful for path: {file_path_in_bucket}. Response hint: {type(upload_response)}")
 
     except Exception as e:
-        # Catch potential API errors from Supabase storage. Check e.details if available.
-        logger.error(f"Error uploading file to Supabase Storage: {e}", exc_info=True)
-        # if hasattr(e, 'details'): logger.error(f"Supabase error details: {e.details}")
-        raise # Re-raise the exception
+        logger.error(f"Error uploading file '{filename}' to Supabase Storage: {e}", exc_info=True)
+        raise Exception(f"Failed to upload file to storage: {str(e)}") from e
 
-    # --- Get Public URL ---
     try:
-        # client.storage.from_().get_public_url() is synchronous and returns string directly
         public_url = client.storage.from_(SUPABASE_BUCKET_NAME).get_public_url(file_path_in_bucket)
 
         if not isinstance(public_url, str) or not public_url.startswith('http'):
-             logger.warning(f"Unexpected format for public URL: {public_url}. Check bucket permissions ('{SUPABASE_BUCKET_NAME}') and path ('{file_path_in_bucket}').")
-             # Avoid manual construction unless absolutely necessary and verified.
-             raise ValueError(f"Failed to get a valid public URL for {file_path_in_bucket}")
+            logger.error(f"Failed to get a valid public URL. Received: {public_url}. Check bucket permissions.")
+            raise ValueError(f"Failed to get a valid public URL for {file_path_in_bucket}")
 
         logger.info(f"Successfully retrieved public URL: {public_url}")
         return public_url
     except Exception as e:
-        logger.error(f"Error getting public URL from Supabase: {e}", exc_info=True)
-        raise
+        logger.error(f"Error getting public URL from Supabase for '{file_path_in_bucket}': {e}", exc_info=True)
+        raise Exception(f"Failed to get public URL: {str(e)}") from e
 
-
-# --- MODIFIED FUNCTION ---
 async def add_resume_to_db(filename: str, file_url: str, text_content: str, embedding: List[float]) -> dict:
-    """
-    Adds resume metadata and its embedding to the Supabase database.
-    The function is async to fit FastAPI, but the .execute() call is synchronous.
-    """
+    """Adds resume metadata and its embedding to the Supabase database."""
     client = get_supabase_client()
     logger.info(f"Adding resume metadata and embedding to Supabase DB table '{DB_TABLE_NAME}' for: {filename}")
     try:
@@ -116,53 +93,34 @@ async def add_resume_to_db(filename: str, file_url: str, text_content: str, embe
             "filename": filename,
             "file_url": file_url,
             "text_content": text_content,
-            "embedding": embedding # Ensure embedding column name matches DB
+            "embedding": embedding
         }
+        response_data = client.table(DB_TABLE_NAME).insert(data_to_insert).execute()
 
-        # .execute() is SYNCHRONOUS in supabase-py v2 - DO NOT use 'await' here
-        response: PostgrestAPIResponse = client.table(DB_TABLE_NAME).insert(data_to_insert).execute()
-
-        # --- Robust Response Checking ---
-        logger.debug(f"Supabase DB insert API response status: {response.status_code}")
-        # logger.debug(f"Supabase DB insert API response data: {response.data}") # Be careful logging potentially large data
-
-        # Check status code for success (usually 201 for Created)
-        if response.status_code == 201 and response.data and isinstance(response.data, list) and len(response.data) > 0:
-            inserted_record = response.data[0]
+        if response_data and isinstance(response_data.data, list) and len(response_data.data) > 0:
+            inserted_record = response_data.data[0]
             if 'id' in inserted_record and inserted_record['id'] is not None:
-                 logger.info(f"Successfully inserted resume data. ID: {inserted_record.get('id')}")
-                 return inserted_record
+                logger.info(f"Successfully inserted resume data. ID: {inserted_record.get('id')}")
+                return inserted_record
             else:
-                 # This case (201 status but missing ID in data) would be unusual
-                 error_message = f"Supabase insert returned status 201 but data missing 'id'. Data: {inserted_record}"
-                 logger.error(error_message)
-                 raise Exception(error_message)
+                error_message = f"Supabase insert succeeded but returned data missing 'id'. Data: {inserted_record}"
+                logger.error(error_message)
+                raise Exception(error_message)
         else:
-            # Handle other status codes or unexpected data format
-            error_message = f"Supabase insert failed or returned unexpected data. Status: {response.status_code}. Response Data: {response.data}"
+            error_message = f"Supabase insert returned unexpected data format. Expected list with record, got: {response_data}"
             logger.error(error_message)
-            # You could check response.error here if the library populates it on failure
-            # if hasattr(response, 'error') and response.error:
-            #     logger.error(f"Supabase error details: {response.error}")
             raise Exception(error_message)
 
     except Exception as e:
-        # Catch exceptions from the API call itself or our checks/raises
-        logger.error(f"Error during Supabase DB insert operation: {e}", exc_info=True)
-        # if hasattr(e, 'details'): logger.error(f"Supabase error details: {e.details}")
-        raise # Re-raise the exception
+        logger.error(f"Error during Supabase DB insert operation for '{filename}': {e}", exc_info=True)
+        raise Exception(f"Database insert failed: {str(e)}") from e
 
-
-# --- UPDATED FUNCTION ---
 async def search_resumes_by_vector(
     jd_embedding: List[float],
     match_threshold: float = 0.7,
     match_count: int = 10
 ) -> List[Dict[str, Any]]:
-    """
-    Searches resumes via RPC based on vector similarity.
-    The function is async, but the .execute() call is synchronous.
-    """
+    """Searches resumes via RPC based on vector similarity."""
     client = get_supabase_client()
     logger.info(f"Searching resumes using RPC function '{DB_MATCH_FUNCTION_NAME}'. Threshold: {match_threshold}, Count: {match_count}")
     try:
@@ -171,66 +129,34 @@ async def search_resumes_by_vector(
             'match_threshold': match_threshold,
             'match_count': match_count
         }
-        # .execute() is SYNCHRONOUS in supabase-py v2 - DO NOT use 'await' here
-        response: PostgrestAPIResponse = client.rpc(DB_MATCH_FUNCTION_NAME, params).execute()
+        response_data = client.rpc(DB_MATCH_FUNCTION_NAME, params).execute()
 
-        logger.debug(f"Supabase RPC call status: {response.status_code}")
-        # logger.debug(f"Supabase RPC call data: {response.data}")
-
-        # Check for successful status code (usually 200 for RPC OK)
-        if response.status_code == 200 and response.data and isinstance(response.data, list):
-            logger.info(f"Found {len(response.data)} matches via RPC.")
-            return response.data
-        elif response.status_code == 200: # Success status but maybe no data or wrong format
-             logger.info(f"RPC call '{DB_MATCH_FUNCTION_NAME}' succeeded but returned no matches or unexpected data format: {type(response.data)}")
-             return []
+        if response_data and isinstance(response_data.data, list):
+            logger.info(f"Found {len(response_data.data)} matches via RPC.")
+            return response_data.data
         else:
-            # Handle RPC error status codes
-            error_message = f"Supabase RPC call '{DB_MATCH_FUNCTION_NAME}' failed. Status: {response.status_code}. Response Data: {response.data}"
-            logger.error(error_message)
-            # if hasattr(response, 'error') and response.error:
-            #     logger.error(f"Supabase error details: {response.error}")
-            raise Exception(error_message)
+            logger.warning(f"RPC call '{DB_MATCH_FUNCTION_NAME}' executed but returned unexpected data format. Returning empty list.")
+            return []
 
     except Exception as e:
         logger.error(f"Error during Supabase RPC call '{DB_MATCH_FUNCTION_NAME}': {e}", exc_info=True)
-        # if hasattr(e, 'details'): logger.error(f"Supabase error details: {e.details}")
-        raise # Re-raise the exception
+        raise Exception(f"Database RPC search failed: {str(e)}") from e
 
-
-# --- UPDATED FUNCTION ---
 async def get_all_resumes_from_db() -> list:
-    """
-    Fetches all resume metadata (use with caution for large datasets).
-    The function is async, but the .execute() call is synchronous.
-    """
+    """Fetches all resume metadata."""
     client = get_supabase_client()
     logger.warning(f"Fetching all resumes from DB table '{DB_TABLE_NAME}' (consider performance impact)...")
     try:
-        # Select specific columns, excluding 'embedding' if not needed here
         select_query = "id, filename, file_url, text_content, uploaded_at"
+        response_data = client.table(DB_TABLE_NAME).select(select_query).execute()
 
-        # .execute() is SYNCHRONOUS in supabase-py v2 - DO NOT use 'await' here
-        response: PostgrestAPIResponse = client.table(DB_TABLE_NAME).select(select_query).execute()
-
-        logger.debug(f"Supabase select all status: {response.status_code}")
-
-        if response.status_code == 200 and response.data and isinstance(response.data, list):
-            logger.info(f"Fetched {len(response.data)} resumes.")
-            return response.data
-        elif response.status_code == 200:
-             logger.info(f"Select all from '{DB_TABLE_NAME}' succeeded but returned no data.")
-             return []
+        if response_data and isinstance(response_data.data, list):
+            logger.info(f"Fetched {len(response_data.data)} resumes.")
+            return response_data.data
         else:
-             # Handle select error status codes
-            error_message = f"Supabase select all from '{DB_TABLE_NAME}' failed. Status: {response.status_code}. Response Data: {response.data}"
-            logger.error(error_message)
-            # if hasattr(response, 'error') and response.error:
-            #     logger.error(f"Supabase error details: {response.error}")
-            raise Exception(error_message)
+            logger.warning(f"Select all from '{DB_TABLE_NAME}' executed but returned unexpected data format. Returning empty list.")
+            return []
 
     except Exception as e:
-        logger.error(f"Error fetching all resumes: {e}", exc_info=True)
-        # if hasattr(e, 'details'): logger.error(f"Supabase error details: {e.details}")
-        return [] # Return empty list on failure for this specific function maybe? Or re-raise? Re-raising is often better.
-        # raise e # Re-raise to let the caller handle it
+        logger.error(f"Error fetching all resumes from '{DB_TABLE_NAME}': {e}", exc_info=True)
+        raise Exception(f"Database select all failed: {str(e)}") from e
